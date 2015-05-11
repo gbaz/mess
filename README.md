@@ -1,2 +1,2 @@
 # mess
-; Martin-Löf Extensible Specification and Simulator
+Martin-Löf Extensible Specification and Simulator
