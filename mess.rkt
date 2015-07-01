@@ -32,7 +32,9 @@
   (let* ([newvar (fresh-var var cxt)]
          [newcxt (cons (cons newvar vt) cxt)])
     body))
-          
+
+(struct stuck-app (fun arg) #:transparent)
+
 ; a reduction of a value in a context creates a term where "app" is not in the head position.
 ; this is "weak head normal form" call-by-name reduction
 ; we call a term in such a form "reduced" or simply a "value"
@@ -52,10 +54,8 @@
    (closure (app-type cxt (red-eval cxt ty) arg) (lambda (cxt) (app (b cxt) arg)))] 
   ; To reduce an application of anything else to an argument, we first reduce the thing itself
   ; and then attempt to again reduce the application of the result
-
   [(_ (app fun arg)) (if (or (not fun) (symbol? fun))
-                         (raise-arguments-error 'stuck "reduction stuck"
-                                                "fun" fun "arg" arg)
+                         (stuck-app fun arg)
                          (reduce cxt (app (reduce cxt fun) arg)))]
   [(_ _) body])
 
@@ -78,6 +78,12 @@
    (if (hasType? cxt arg a) (b arg)
        (raise-arguments-error 'bad-type "bad pi type applying in closure" "cxt" cxt "fun" fun "arg" arg))]
   [(_ _ _) (raise-arguments-error 'bad-type "can't apply non-function type in closure" "cxt" cxt "fun" fun "arg" arg)])
+
+(define/match (head-type t)
+  [((type-fun a b)) a]
+  [((type-pi av a b)) a]
+  [(_) (raise-arguments-error 'bad-type "can't take head of non-function-type")]) ; TODO what if it is a symbol?
+
 
 ; In all the following, judgment may be read as "verification"
 ; and "to judge" may be read as "to verify," "to know" or "to confirm"
@@ -153,6 +159,13 @@
                       (eqType? newcxt (b newvar) (b1 newvar))))]
     ; To know two symbols are equal as types is to know that they are the same symbol
     [((? symbol? vname) (? symbol? vname1)) (eq? vname vname1)]
+    ; To know two stuck applications are equal as types is to know that their functions have equal types, and are equal as values.
+    ; And additionally, to know that their arguments have equal values at the type of the function argument.
+    [((stuck-app fun arg) (stuck-app fun1 arg1))
+     (and
+      (eqType? cxt (find-cxt fun cxt) (find-cxt fun1 cxt))
+      (eqVal? cxt (find-cxt fun cxt) fun fun1)
+      (eqVal? cxt (head-type (find-cxt fun cxt)) arg arg1))]
     ; Or to know any other two values are equal as types is to follow any
     ; additional rules on how we may judge the equality of terms as types
     [(a b) (and a b (or (eqType?-additional cxt a b)
@@ -189,7 +202,11 @@
     [(_ (trustme t v) (trustme t1 v1)) (and (eqType? cxt t t1) (equal? v v1))] ;if all else fails use primitive equality
     ; Or to know any other two values are equal at any other type is to follow any
     ; additional rules on how we may judge the equality of terms at types
-    [(rtyp x y) (eqVal?-additional cxt rtyp x y)]))
+;    [(rtyp x y) (eqVal?-additional cxt rtyp x y)]))
+    [(rtyp x y) (and rtyp (or (eqVal?-additional cxt rtyp x y)
+                          (begin (printf "not equal\n typ: ~a\n ~a\n ~a\n cxt: ~a\n" rtyp x y cxt) #f)))]))
+
+; TODO try to add just syntactic equality for stuck terms at a type
 
 (define type-judgments '())
 (define (type?-additional cxt t)
@@ -463,6 +480,49 @@
    (and (eqVal? cxt a x x1)
         (eqVal? cxt (b x) y y1))]
   [(_ _ _ _) #f]))
+
+(define sig-induct-type
+  (pi-ty (a type-type)
+  (pi-ty (b (type-fun a type-type))
+  (pi-ty (c (type-fun (sig-ty (x a) (app b x)) type-type))
+  (type-fun
+   (pi-ty (x a)
+   (pi-ty (y (app b x))
+   (app c (cons x y))))
+  (pi-ty (p (sig-ty (x a) (app b x)))
+  (app c p)))))))
+
+(define sig-induct
+  (pi (a type-type)
+  (pi (b (type-fun a type-type))
+  (pi (c (type-fun (sig-ty (x a) (app b x)) type-type))
+  (lam (g (pi-ty (x a)
+          (pi-ty (y (app b x))
+          (app c (cons x y)))))
+  (pi (p (sig-ty (x a) (app b x)))
+  (close (app c p) (lambda (env) (apps g (car (red-eval env p)) (cdr (red-eval env p)))))))))))
+
+(displayln "Sigma induction can be defined.")
+(hasType? '() sig-induct sig-induct-type)
+
+;; Forall A, B over A, app fst Sig(a A,B a) : A
+(define fst-sig-type
+  (pi-ty (a type-type)
+  (pi-ty (b (type-fun a type-type))
+  (type-fun (sig-ty (x a) (app b x)) a)
+  )))
+
+(define fst-sig
+  (pi (a type-type)
+  (pi (b (type-fun a type-type))
+  (lam (sg (sig-ty (x a) (app b x)))
+  (apps sig-induct a b
+        (lam (s (sig-ty (x a) (app b x))) a)
+        (pi (x a) (pi (y (app b x)) x))
+        sg)))))
+
+(displayln "We can use sigma induction to properly eliminate out of sigma, with the type we would expect")
+(red-eval '() (apps fst-sig type-nat (lam (x type-nat) type-bool) (cons 25 #t)))
 
 ; every number has a successor
 (define has-succ (pi (n type-nat) (cons (app succ n) (apps refl type-nat (app succ n)))))
